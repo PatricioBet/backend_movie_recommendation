@@ -11,8 +11,22 @@ from ncf_model import NCF
 
 from fastapi.middleware.cors import CORSMiddleware
 
-# Create tables
-models.Base.metadata.create_all(bind=database.engine)
+import time
+from sqlalchemy.exc import OperationalError
+
+# Create tables with retry for docker-compose startup
+max_retries = 5
+for i in range(max_retries):
+    try:
+        models.Base.metadata.create_all(bind=database.engine)
+        print("Database connected and tables created successfully.")
+        break
+    except OperationalError as e:
+        if i == max_retries - 1:
+            print("Failed to connect to the database after several retries.")
+            raise e
+        print(f"Database connection failed. Retrying in 3 seconds... ({i+1}/{max_retries})")
+        time.sleep(3)
 
 app = FastAPI(title="Movie Recommendation API")
 
