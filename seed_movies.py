@@ -3,12 +3,13 @@ import zipfile
 import os
 import csv
 import re
-from sqlalchemy.orm import Session
-from database import SessionLocal, engine
+from database import SessionLocal, engine, DATABASE_URL
 import models
 
 def seed():
     models.Base.metadata.create_all(bind=engine)
+
+    print(f"Using database: {DATABASE_URL}")
 
     print("Downloading MovieLens dataset...")
     url = "https://files.grouplens.org/datasets/movielens/ml-latest.zip"
@@ -23,15 +24,25 @@ def seed():
     print("Seeding database...")
     db = SessionLocal()
 
+    before_count = db.query(models.Movie).count()
+    inserted_count = 0
+    skipped_count = 0
+
     # Get existing movie IDs to avoid duplicates
-    existing_ids = {m.id for m in db.query(models.Movie.id).all()}
+    existing_ids = {movie_id for (movie_id,) in db.query(models.Movie.id).all()}
     
-    with open("ml-latest/movies.csv", newline='', encoding='utf-8') as f:
+    movies_csv_path = "ml-latest/movies.csv"
+    if not os.path.exists(movies_csv_path):
+        db.close()
+        raise FileNotFoundError(f"Could not find dataset file: {movies_csv_path}")
+
+    with open(movies_csv_path, newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         movies_to_insert = []
         for row in reader:
             m_id = int(row['movieId'])
             if m_id in existing_ids:
+                skipped_count += 1
                 continue
                 
             title_raw = row['title']
@@ -54,6 +65,7 @@ def seed():
                 description="MovieLens database item."
             )
             movies_to_insert.append(movie)
+            inserted_count += 1
             
             if len(movies_to_insert) >= 1000:
                 db.bulk_save_objects(movies_to_insert)
@@ -64,8 +76,13 @@ def seed():
             db.bulk_save_objects(movies_to_insert)
             db.commit()
 
+    after_count = db.query(models.Movie).count()
     db.close()
-    print("Seeding complete! Real movies are now in the generic database.")
+    print(
+        "Seeding complete! "
+        f"Inserted: {inserted_count}, Skipped existing: {skipped_count}, "
+        f"Movies before: {before_count}, after: {after_count}."
+    )
 
 if __name__ == "__main__":
     seed()
