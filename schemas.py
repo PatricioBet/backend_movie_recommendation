@@ -23,6 +23,7 @@ class MovieBase(BaseModel):
     presentation_score: Optional[int] = 0
     good_rating_count: Optional[int] = 0
     bad_rating_count: Optional[int] = 0
+    trending_score: Optional[float] = 0.0
 
 class MovieCreate(MovieBase):
     pass

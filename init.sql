@@ -11,8 +11,13 @@ CREATE TABLE IF NOT EXISTS movies (
     poster_url TEXT,
     description TEXT,
     year INTEGER,
-    presentation_score INTEGER DEFAULT 0
+    presentation_score INTEGER DEFAULT 0,
+    good_rating_count INTEGER DEFAULT 0,
+    bad_rating_count INTEGER DEFAULT 0,
+    trending_score FLOAT DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_movies_trending_score ON movies (trending_score DESC);
 
 CREATE TABLE IF NOT EXISTS ratings (
     id SERIAL PRIMARY KEY,

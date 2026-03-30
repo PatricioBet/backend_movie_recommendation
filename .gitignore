@@ -20,3 +20,6 @@ db_data/
 postgres_data/
 
 .DS_Store
+
+.ml-latest/
+.ml-latest-small/

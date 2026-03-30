@@ -1,9 +1,13 @@
 import os
 import pickle
-from fastapi import FastAPI, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-import models, schemas, database
 from typing import List
+
+from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy.orm import Session
+
+import database
+import models
+import schemas
 
 # ML additions
 import torch
@@ -13,6 +17,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import time
 from sqlalchemy.exc import OperationalError
+
+
+def calculate_trending_score(good_count: int, bad_count: int) -> float:
+    # Laplace smoothing to reduce volatility with very low vote counts.
+    return (good_count + 1) / (good_count + bad_count + 2)
+
+
+def update_movie_trending_score(movie: models.Movie) -> None:
+    good = movie.good_rating_count or 0
+    bad = movie.bad_rating_count or 0
+    movie.trending_score = calculate_trending_score(good, bad)
 
 # Create tables with retry for docker-compose startup
 max_retries = 5
@@ -27,6 +42,13 @@ for i in range(max_retries):
                 conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS presentation_score INTEGER DEFAULT 0"))
                 conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS good_rating_count INTEGER DEFAULT 0"))
                 conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS bad_rating_count INTEGER DEFAULT 0"))
+                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS trending_score FLOAT DEFAULT 0"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_movies_trending_score ON movies (trending_score DESC)"))
+                conn.execute(text("""
+                    UPDATE movies
+                    SET trending_score = (COALESCE(good_rating_count, 0) + 1)::FLOAT /
+                                         (COALESCE(good_rating_count, 0) + COALESCE(bad_rating_count, 0) + 2)
+                """))
                 conn.commit()
             except Exception as ex:
                 print(f"Migration error: {ex}")
@@ -113,8 +135,7 @@ def get_random_movies(limit: int = 10, db: Session = Depends(get_db)):
     from sqlalchemy.sql.expression import func
     import random
     
-    # 60% based on presentation_score weighted random
-    score_limit = int(limit * 0.3)
+    score_limit = int(limit * 0.1)
     weighted_movies = db.query(models.Movie)\
                         .filter(models.Movie.presentation_score > 0)\
                         .order_by(-func.log(func.random()) / models.Movie.presentation_score)\
@@ -123,7 +144,6 @@ def get_random_movies(limit: int = 10, db: Session = Depends(get_db)):
     actual_score_count = len(weighted_movies)
     random_limit = limit - actual_score_count
     
-    # 40% (plus any shortfall) purely random from the rest
     weighted_ids = [m.id for m in weighted_movies]
     query = db.query(models.Movie)
     if weighted_ids:
@@ -136,26 +156,36 @@ def get_random_movies(limit: int = 10, db: Session = Depends(get_db)):
     
     # Mock fallback if db is empty
     if not movies:
-        return [{"id": i, "title": f"Hardcoded Movie {i}", "genres": "Action", "year": 2026, "presentation_score": 0} for i in range(limit)]
+        return [{"id": i, "title": f"Película {i}", "genres": "Action", "year": 2026, "presentation_score": 0} for i in range(limit)]
     return movies
 
 @app.post("/users/{user_id}/ratings/", response_model=schemas.Rating)
 def create_rating(user_id: int, rating: schemas.RatingCreate, db: Session = Depends(get_db)):
-    # Increment presentation score if it's an actual rating (not null/"no vista")
-    if rating.rating is not None:
-        movie = db.query(models.Movie).filter(models.Movie.id == rating.movie_id).first()
-        if movie:
-            movie.presentation_score = (movie.presentation_score or 0) + 1
-            if rating.rating >= 4.0:
-                movie.good_rating_count = (movie.good_rating_count or 0) + 1
-            elif rating.rating <= 2.0:
-                movie.bad_rating_count = (movie.bad_rating_count or 0) + 1
-            db.commit()
+    movie = db.query(models.Movie).filter(models.Movie.id == rating.movie_id).first()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
 
     existing = db.query(models.Rating).filter(
         models.Rating.user_id == user_id, 
         models.Rating.movie_id == rating.movie_id
     ).first()
+
+    old_rating = existing.rating if existing else None
+
+    if old_rating is not None:
+        if old_rating >= 4.0:
+            movie.good_rating_count = max((movie.good_rating_count or 0) - 1, 0)
+        elif old_rating <= 2.0:
+            movie.bad_rating_count = max((movie.bad_rating_count or 0) - 1, 0)
+
+    if rating.rating is not None:
+        movie.presentation_score = (movie.presentation_score or 0) + 1
+        if rating.rating >= 4.0:
+            movie.good_rating_count = (movie.good_rating_count or 0) + 1
+        elif rating.rating <= 2.0:
+            movie.bad_rating_count = (movie.bad_rating_count or 0) + 1
+
+    update_movie_trending_score(movie)
     
     if existing:
         existing.rating = rating.rating
@@ -177,27 +207,20 @@ def rate_recommendation(movie_id: int, rating: schemas.RecRatingCreate, db: Sess
             movie.good_rating_count = (movie.good_rating_count or 0) + 1
         else:
             movie.bad_rating_count = (movie.bad_rating_count or 0) + 1
+        update_movie_trending_score(movie)
         db.commit()
         return {"status": "ok"}
     raise HTTPException(status_code=404, detail="Movie not found")
 
 @app.get("/movies/trending", response_model=List[schemas.Movie])
-def get_trending_movies(limit: int = 5, db: Session = Depends(get_db)):
-    movies = db.query(models.Movie).filter(
+def get_trending_movies(limit: int = 6, db: Session = Depends(get_db)):
+    return db.query(models.Movie).filter(
         (models.Movie.good_rating_count > 0) | (models.Movie.bad_rating_count > 0)
-    ).all()
-    
-    def acceptance_score(m):
-        good = m.good_rating_count or 0
-        bad = m.bad_rating_count or 0
-        
-        # Laplace smoothing (fórmula Bayesiana) para priorizar películas con más calificaciones.
-        # Una película con 10 buenas y 1 mala (11/13 ≈ 0.84) tendrá más peso 
-        # que una con 1 buena y 0 malas (2/3 ≈ 0.66).
-        return (good + 1) / (good + bad + 2)
-        
-    movies.sort(key=acceptance_score, reverse=True)
-    return movies[:limit]
+    ).order_by(
+        models.Movie.trending_score.desc(),
+        models.Movie.good_rating_count.desc(),
+        models.Movie.id.asc()
+    ).limit(limit).all()
 
 @app.get("/users/{user_id}/recommendations", response_model=List[schemas.Movie])
 def get_recommendations(user_id: int, db: Session = Depends(get_db)):
@@ -227,7 +250,7 @@ def get_recommendations(user_id: int, db: Session = Depends(get_db)):
                 if movie_obj:
                     good = movie_obj.good_rating_count or 0
                     bad = movie_obj.bad_rating_count or 0
-                    popularity_bonus = (good + 1) / (good + bad + 2)  # Mismo algoritmo (Laplace)
+                    popularity_bonus = calculate_trending_score(good, bad)
                     pred_score = pred_score * 0.7 + popularity_bonus * 0.3 * pred_score
                     
                 adjusted_preds.append((m_id, pred_score))

@@ -25,6 +25,7 @@ class Movie(Base):
     presentation_score = Column(Integer, default=0)
     good_rating_count = Column(Integer, default=0)
     bad_rating_count = Column(Integer, default=0)
+    trending_score = Column(Float, default=0.0, index=True)
 
 class Rating(Base):
     __tablename__ = "ratings"
