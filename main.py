@@ -186,11 +186,11 @@ def get_trending_movies(limit: int = 5, db: Session = Depends(get_db)):
     def acceptance_score(m):
         good = m.good_rating_count or 0
         bad = m.bad_rating_count or 0
-        total = good + bad
-        if total == 0:
-            return 0
-        percentage = good / total
-        return (percentage, total)
+        
+        # Laplace smoothing (fórmula Bayesiana) para priorizar películas con más calificaciones.
+        # Una película con 10 buenas y 1 mala (11/13 ≈ 0.84) tendrá más peso 
+        # que una con 1 buena y 0 malas (2/3 ≈ 0.66).
+        return (good + 1) / (good + bad + 2)
         
     movies.sort(key=acceptance_score, reverse=True)
     return movies[:limit]
@@ -198,11 +198,9 @@ def get_trending_movies(limit: int = 5, db: Session = Depends(get_db)):
 @app.get("/users/{user_id}/recommendations", response_model=List[schemas.Movie])
 def get_recommendations(user_id: int, db: Session = Depends(get_db)):
     if ncf_net is not None:
-        # If user is new (cold start), map to index 0 dynamically or handle properly
         idx_user = user2idx.get(user_id, 0)
         
-        # Consider top 100 random popular movies
-        all_movies = db.query(models.Movie).limit(100).all()
+        all_movies = db.query(models.Movie).all()
         if not all_movies:
             return [{"id": 1, "title": "Inception", "genres": "Sci-Fi", "year": 2010}]
             
@@ -215,11 +213,28 @@ def get_recommendations(user_id: int, db: Session = Depends(get_db)):
             i_tensors = torch.tensor([movie2idx[m] for m in m_ids], dtype=torch.long)
             preds = ncf_net(u_tensors, i_tensors)
             
-            top_indices = torch.argsort(preds, descending=True)[:5]
-            top_m_ids = [m_ids[i] for i in top_indices.tolist()]
+            # Incorporar la popularidad al modelo de predicción
+            # Predicción base + peso por cantidad de calificaciones positivas comprobadas
+            adjusted_preds = []
+            for idx, m_id in enumerate(m_ids):
+                movie_obj = next((m for m in all_movies if m.id == m_id), None)
+                pred_score = preds[idx].item()
+                
+                if movie_obj:
+                    good = movie_obj.good_rating_count or 0
+                    bad = movie_obj.bad_rating_count or 0
+                    popularity_bonus = (good + 1) / (good + bad + 2)  # Mismo algoritmo (Laplace)
+                    pred_score = pred_score * 0.7 + popularity_bonus * 0.3 * pred_score
+                    
+                adjusted_preds.append((m_id, pred_score))
+                
+            adjusted_preds.sort(key=lambda x: x[1], reverse=True)
+            top_m_ids = [m_id for m_id, score in adjusted_preds[:5]]
             
         recs = db.query(models.Movie).filter(models.Movie.id.in_(top_m_ids)).all()
-        return recs
+        # Asegurar mantener el orden correcto de las recomendaciones
+        recs_dict = {m.id: m for m in recs}
+        return [recs_dict[m_id] for m_id in top_m_ids if m_id in recs_dict]
         
     # Simulation mode fallback
     from sqlalchemy.sql.expression import func
