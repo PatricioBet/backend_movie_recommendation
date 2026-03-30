@@ -11,8 +11,8 @@ def seed():
     models.Base.metadata.create_all(bind=engine)
 
     print("Downloading MovieLens dataset...")
-    url = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
-    zip_path = "ml-latest-small.zip"
+    url = "https://files.grouplens.org/datasets/movielens/ml-latest.zip"
+    zip_path = "ml-latest.zip"
     if not os.path.exists(zip_path):
         urllib.request.urlretrieve(url, zip_path)
 
@@ -26,7 +26,7 @@ def seed():
     # Get existing movie IDs to avoid duplicates
     existing_ids = {m.id for m in db.query(models.Movie.id).all()}
     
-    with open("ml-latest-small/movies.csv", newline='', encoding='utf-8') as f:
+    with open("ml-latest/movies.csv", newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         movies_to_insert = []
         for row in reader:
