@@ -20,6 +20,7 @@ class MovieBase(BaseModel):
     poster_url: Optional[str] = None
     description: Optional[str] = None
     year: Optional[int] = None
+    presentation_score: Optional[int] = 0
 
 class MovieCreate(MovieBase):
     pass
@@ -31,7 +32,7 @@ class Movie(MovieBase):
 
 class RatingBase(BaseModel):
     movie_id: int
-    rating: float
+    rating: Optional[float] = None
 
 class RatingCreate(RatingBase):
     pass

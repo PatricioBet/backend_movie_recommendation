@@ -10,14 +10,15 @@ CREATE TABLE IF NOT EXISTS movies (
     genres VARCHAR(255),
     poster_url TEXT,
     description TEXT,
-    year INTEGER
+    year INTEGER,
+    presentation_score INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS ratings (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
     movie_id INTEGER REFERENCES movies(id) ON DELETE CASCADE,
-    rating FLOAT NOT NULL,
+    rating FLOAT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, movie_id)
 );

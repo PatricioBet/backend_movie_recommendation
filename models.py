@@ -22,6 +22,7 @@ class Movie(Base):
     poster_url = Column(Text)
     description = Column(Text)
     year = Column(Integer)
+    presentation_score = Column(Integer, default=0)
 
 class Rating(Base):
     __tablename__ = "ratings"
@@ -29,7 +30,7 @@ class Rating(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"))
     movie_id = Column(Integer, ForeignKey("movies.id", ondelete="CASCADE"))
-    rating = Column(Float, nullable=False)
+    rating = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="ratings")

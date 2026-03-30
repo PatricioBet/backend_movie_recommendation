@@ -19,6 +19,21 @@ max_retries = 5
 for i in range(max_retries):
     try:
         models.Base.metadata.create_all(bind=database.engine)
+        
+        # Automatic mini-migrations
+        from sqlalchemy import text
+        with database.engine.connect() as conn:
+            try:
+                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS presentation_score INTEGER DEFAULT 0"))
+                conn.commit()
+            except Exception as ex:
+                print(f"Migration error: {ex}")
+            try:
+                conn.execute(text("ALTER TABLE ratings ALTER COLUMN rating DROP NOT NULL"))
+                conn.commit()
+            except Exception as ex:
+                print(f"Migration error: {ex}")
+                
         print("Database connected and tables created successfully.")
         break
     except OperationalError as e:
@@ -90,15 +105,43 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 @app.get("/movies/random", response_model=List[schemas.Movie])
 def get_random_movies(limit: int = 10, db: Session = Depends(get_db)):
     from sqlalchemy.sql.expression import func
-    movies = db.query(models.Movie).order_by(func.random()).limit(limit).all()
+    import random
+    
+    # 60% based on presentation_score weighted random
+    score_limit = int(limit * 0.6)
+    weighted_movies = db.query(models.Movie)\
+                        .filter(models.Movie.presentation_score > 0)\
+                        .order_by(-func.log(func.random()) / models.Movie.presentation_score)\
+                        .limit(score_limit).all()
+                        
+    actual_score_count = len(weighted_movies)
+    random_limit = limit - actual_score_count
+    
+    # 40% (plus any shortfall) purely random from the rest
+    weighted_ids = [m.id for m in weighted_movies]
+    query = db.query(models.Movie)
+    if weighted_ids:
+        query = query.filter(~models.Movie.id.in_(weighted_ids))
+        
+    random_movies = query.order_by(func.random()).limit(random_limit).all()
+    
+    movies = weighted_movies + random_movies
+    random.shuffle(movies)
+    
     # Mock fallback if db is empty
     if not movies:
-        return [{"id": i, "title": f"Hardcoded Movie {i}", "genres": "Action", "year": 2026} for i in range(limit)]
+        return [{"id": i, "title": f"Hardcoded Movie {i}", "genres": "Action", "year": 2026, "presentation_score": 0} for i in range(limit)]
     return movies
 
 @app.post("/users/{user_id}/ratings/", response_model=schemas.Rating)
 def create_rating(user_id: int, rating: schemas.RatingCreate, db: Session = Depends(get_db)):
-    new_rating = models.Rating(**rating.model_dump(), user_id=user_id)
+    # Increment presentation score if it's an actual rating (not null/"no vista")
+    if rating.rating is not None:
+        movie = db.query(models.Movie).filter(models.Movie.id == rating.movie_id).first()
+        if movie:
+            movie.presentation_score = (movie.presentation_score or 0) + 1
+            db.commit()
+
     existing = db.query(models.Rating).filter(
         models.Rating.user_id == user_id, 
         models.Rating.movie_id == rating.movie_id
@@ -110,6 +153,7 @@ def create_rating(user_id: int, rating: schemas.RatingCreate, db: Session = Depe
         db.refresh(existing)
         return existing
         
+    new_rating = models.Rating(**rating.model_dump(), user_id=user_id)
     db.add(new_rating)
     db.commit()
     db.refresh(new_rating)
