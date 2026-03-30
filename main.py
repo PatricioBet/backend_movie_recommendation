@@ -48,10 +48,14 @@ for i in range(max_retries):
 app = FastAPI(title="Movie Recommendation API")
 
 # Add CORS Middleware to allow requests from Next.js
+cors_origins_raw = os.getenv("CORS_ORIGINS", "*")
+cors_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()]
+allow_all_origins = len(cors_origins) == 1 and cors_origins[0] == "*"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
