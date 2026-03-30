@@ -23,6 +23,8 @@ class Movie(Base):
     description = Column(Text)
     year = Column(Integer)
     presentation_score = Column(Integer, default=0)
+    good_rating_count = Column(Integer, default=0)
+    bad_rating_count = Column(Integer, default=0)
 
 class Rating(Base):
     __tablename__ = "ratings"

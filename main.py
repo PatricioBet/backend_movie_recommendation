@@ -25,6 +25,8 @@ for i in range(max_retries):
         with database.engine.connect() as conn:
             try:
                 conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS presentation_score INTEGER DEFAULT 0"))
+                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS good_rating_count INTEGER DEFAULT 0"))
+                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS bad_rating_count INTEGER DEFAULT 0"))
                 conn.commit()
             except Exception as ex:
                 print(f"Migration error: {ex}")
@@ -108,7 +110,7 @@ def get_random_movies(limit: int = 10, db: Session = Depends(get_db)):
     import random
     
     # 60% based on presentation_score weighted random
-    score_limit = int(limit * 0.6)
+    score_limit = int(limit * 0.3)
     weighted_movies = db.query(models.Movie)\
                         .filter(models.Movie.presentation_score > 0)\
                         .order_by(-func.log(func.random()) / models.Movie.presentation_score)\
@@ -140,6 +142,10 @@ def create_rating(user_id: int, rating: schemas.RatingCreate, db: Session = Depe
         movie = db.query(models.Movie).filter(models.Movie.id == rating.movie_id).first()
         if movie:
             movie.presentation_score = (movie.presentation_score or 0) + 1
+            if rating.rating >= 4.0:
+                movie.good_rating_count = (movie.good_rating_count or 0) + 1
+            elif rating.rating <= 2.0:
+                movie.bad_rating_count = (movie.bad_rating_count or 0) + 1
             db.commit()
 
     existing = db.query(models.Rating).filter(
@@ -158,6 +164,36 @@ def create_rating(user_id: int, rating: schemas.RatingCreate, db: Session = Depe
     db.commit()
     db.refresh(new_rating)
     return new_rating
+
+@app.post("/movies/{movie_id}/recommendation-rating/")
+def rate_recommendation(movie_id: int, rating: schemas.RecRatingCreate, db: Session = Depends(get_db)):
+    movie = db.query(models.Movie).filter(models.Movie.id == movie_id).first()
+    if movie:
+        if rating.is_good:
+            movie.good_rating_count = (movie.good_rating_count or 0) + 1
+        else:
+            movie.bad_rating_count = (movie.bad_rating_count or 0) + 1
+        db.commit()
+        return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Movie not found")
+
+@app.get("/movies/trending", response_model=List[schemas.Movie])
+def get_trending_movies(limit: int = 5, db: Session = Depends(get_db)):
+    movies = db.query(models.Movie).filter(
+        (models.Movie.good_rating_count > 0) | (models.Movie.bad_rating_count > 0)
+    ).all()
+    
+    def acceptance_score(m):
+        good = m.good_rating_count or 0
+        bad = m.bad_rating_count or 0
+        total = good + bad
+        if total == 0:
+            return 0
+        percentage = good / total
+        return (percentage, total)
+        
+    movies.sort(key=acceptance_score, reverse=True)
+    return movies[:limit]
 
 @app.get("/users/{user_id}/recommendations", response_model=List[schemas.Movie])
 def get_recommendations(user_id: int, db: Session = Depends(get_db)):

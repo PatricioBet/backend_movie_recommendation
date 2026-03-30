@@ -21,6 +21,8 @@ class MovieBase(BaseModel):
     description: Optional[str] = None
     year: Optional[int] = None
     presentation_score: Optional[int] = 0
+    good_rating_count: Optional[int] = 0
+    bad_rating_count: Optional[int] = 0
 
 class MovieCreate(MovieBase):
     pass
@@ -54,3 +56,6 @@ class Recommendation(RecommendationBase):
     created_at: datetime
     class Config:
         from_attributes = True
+
+class RecRatingCreate(BaseModel):
+    is_good: bool
