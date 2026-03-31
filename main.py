@@ -114,8 +114,8 @@ movie2idx = {}
 try:
     with open(ENCODERS_PATH, "rb") as f:
         encoders = pickle.load(f)
-        user2idx = encoders["user2idx"]
-        movie2idx = encoders["movie2idx"]
+        user2idx = {int(k): int(v) for k, v in encoders["user2idx"].items()}
+        movie2idx = {int(k): int(v) for k, v in encoders["movie2idx"].items()}
 
     num_users = len(user2idx)
     num_items = len(movie2idx)
@@ -304,7 +304,7 @@ def get_recommendations(user_id: int, db: Session = Depends(get_db)):
     if not rows:
         return db.query(models.Movie).limit(5).all()
 
-    m_ids = [r.id for r in rows]
+    m_ids = [int(r.id) for r in rows]
     good_arr = [r.good_rating_count or 0 for r in rows]
     bad_arr = [r.bad_rating_count or 0 for r in rows]
 
