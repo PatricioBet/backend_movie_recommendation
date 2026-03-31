@@ -31,8 +31,9 @@ def update_movie_trending_score(movie: models.Movie) -> None:
     movie.trending_score = calculate_trending_score(good, bad)
 
 
-# Create tables with retry for docker-compose startup
-max_retries = 5
+# Create tables with retry for container startup.
+max_retries = int(os.getenv("DB_MAX_RETRIES", "20"))
+retry_delay_seconds = int(os.getenv("DB_RETRY_DELAY_SECONDS", "3"))
 for i in range(max_retries):
     try:
         models.Base.metadata.create_all(bind=database.engine)
@@ -42,9 +43,9 @@ for i in range(max_retries):
             print("Failed to connect to the database after several retries.")
             raise e
         print(
-            f"Database connection failed. Retrying in 3 seconds... ({i + 1}/{max_retries})"
+            f"Database connection failed. Retrying in {retry_delay_seconds} seconds... ({i + 1}/{max_retries})"
         )
-        time.sleep(3)
+        time.sleep(retry_delay_seconds)
 
 # Migraciones — solo una vez, fuera del loop
 with database.engine.connect() as conn:
@@ -120,7 +121,7 @@ try:
     num_items = len(movie2idx)
     # Keep architecture aligned with the trained checkpoint to avoid shape mismatches.
     ncf_net = NCF(
-        num_users=num_users, num_items=num_items, embedding_dim=32, dropout=0.33
+        num_users=num_users, num_items=num_items, embedding_dim=64, dropout=0.33
     )
     # Map model to CPU since backend server may not have GPU available
     ncf_net.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device("cpu")))
