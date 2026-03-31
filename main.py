@@ -118,8 +118,9 @@ try:
 
     num_users = len(user2idx)
     num_items = len(movie2idx)
+    # Keep architecture aligned with the trained checkpoint to avoid shape mismatches.
     ncf_net = NCF(
-        num_users=num_users, num_items=num_items, embedding_dim=64, dropout=0.33
+        num_users=num_users, num_items=num_items, embedding_dim=32, dropout=0.33
     )
     # Map model to CPU since backend server may not have GPU available
     ncf_net.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device("cpu")))
