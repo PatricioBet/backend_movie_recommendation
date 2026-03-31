@@ -3,7 +3,7 @@ import pickle
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.orm import Session
 
 import database
@@ -282,51 +282,55 @@ def get_trending_movies(limit: int = 6, db: Session = Depends(get_db)):
 
 @app.get("/users/{user_id}/recommendations", response_model=List[schemas.Movie])
 def get_recommendations(user_id: int, db: Session = Depends(get_db)):
-    if ncf_net is not None:
-        idx_user = user2idx.get(user_id, 0)
-
-        all_movies = db.query(models.Movie).all()
-        if not all_movies:
-            return [{"id": 1, "title": "Inception", "genres": "Sci-Fi", "year": 2010}]
-
-        m_ids = [m.id for m in all_movies if m.id in movie2idx]
-        if not m_ids:
-            return all_movies[:5]
-
-        with torch.no_grad():
-            u_tensors = torch.tensor([idx_user] * len(m_ids), dtype=torch.long)
-            i_tensors = torch.tensor([movie2idx[m] for m in m_ids], dtype=torch.long)
-            preds = ncf_net(u_tensors, i_tensors)
-
-            # Incorporar la popularidad al modelo de predicción
-            # Predicción base + peso por cantidad de calificaciones positivas comprobadas
-            adjusted_preds = []
-            for idx, m_id in enumerate(m_ids):
-                movie_obj = next((m for m in all_movies if m.id == m_id), None)
-                pred_score = preds[idx].item()
-
-                if movie_obj:
-                    good = movie_obj.good_rating_count or 0
-                    bad = movie_obj.bad_rating_count or 0
-                    popularity_bonus = calculate_trending_score(good, bad)
-                    pred_score = pred_score * 0.7 + popularity_bonus * 0.3 * pred_score
-
-                adjusted_preds.append((m_id, pred_score))
-
-            adjusted_preds.sort(key=lambda x: x[1], reverse=True)
-            top_m_ids = [m_id for m_id, score in adjusted_preds[:5]]
-
-        recs = db.query(models.Movie).filter(models.Movie.id.in_(top_m_ids)).all()
-        # Asegurar mantener el orden correcto de las recomendaciones
-        recs_dict = {m.id: m for m in recs}
-        return [recs_dict[m_id] for m_id in top_m_ids if m_id in recs_dict]
-
-    # Simulation mode fallback
-    from sqlalchemy.sql.expression import func
-
-    recs = db.query(models.Movie).order_by(func.random()).limit(5).all()
-    if not recs:
-        return [
+    if ncf_net is None:
+        recs = db.query(models.Movie).order_by(func.random()).limit(5).all()
+        return recs or [
             {"id": 1, "title": "Simulated The Matrix", "genres": "Sci-Fi", "year": 1999}
         ]
-    return recs
+
+    idx_user = user2idx.get(user_id, 0)
+
+    # ✅ Solo traer id + conteos, solo películas conocidas por el modelo
+    rows = (
+        db.query(
+            models.Movie.id,
+            models.Movie.good_rating_count,
+            models.Movie.bad_rating_count,
+        )
+        .filter(models.Movie.id.in_(list(movie2idx.keys())))
+        .all()
+    )
+
+    if not rows:
+        return db.query(models.Movie).limit(5).all()
+
+    m_ids = [r.id for r in rows]
+    good_arr = [r.good_rating_count or 0 for r in rows]
+    bad_arr = [r.bad_rating_count or 0 for r in rows]
+
+    with torch.no_grad():
+        u_t = torch.tensor([idx_user] * len(m_ids), dtype=torch.long)
+        i_t = torch.tensor([movie2idx[m] for m in m_ids], dtype=torch.long)
+
+        preds = ncf_net(u_t, i_t)  # shape: (N,)
+
+        # ✅ Vectorizado: calcula trending score sin loop
+        good_t = torch.tensor(good_arr, dtype=torch.float32)
+        bad_t = torch.tensor(bad_arr, dtype=torch.float32)
+        total = good_t + bad_t + 1e-8
+        wilson_t = (good_t / total) * torch.log1p(
+            total
+        )  # tu trending score vectorizado
+        wilson_norm = wilson_t / (wilson_t.max() + 1e-8)
+
+        adjusted = preds * 0.7 + wilson_norm * 0.3 * preds
+
+        # ✅ torch.topk evita ordenar todo el array
+        top_k = torch.topk(adjusted, k=min(5, len(m_ids)))
+        top_idxs = top_k.indices.tolist()
+
+    top_m_ids = [m_ids[i] for i in top_idxs]
+
+    recs = db.query(models.Movie).filter(models.Movie.id.in_(top_m_ids)).all()
+    recs_dict = {m.id: m for m in recs}
+    return [recs_dict[m_id] for m_id in top_m_ids if m_id in recs_dict]
