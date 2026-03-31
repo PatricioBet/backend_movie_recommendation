@@ -3,6 +3,7 @@ import pickle
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 import database
@@ -34,38 +35,38 @@ max_retries = 5
 for i in range(max_retries):
     try:
         models.Base.metadata.create_all(bind=database.engine)
-        
-        # Automatic mini-migrations
-        from sqlalchemy import text
-        with database.engine.connect() as conn:
-            try:
-                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS presentation_score INTEGER DEFAULT 0"))
-                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS good_rating_count INTEGER DEFAULT 0"))
-                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS bad_rating_count INTEGER DEFAULT 0"))
-                conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS trending_score FLOAT DEFAULT 0"))
-                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_movies_trending_score ON movies (trending_score DESC)"))
-                conn.execute(text("""
-                    UPDATE movies
-                    SET trending_score = (COALESCE(good_rating_count, 0) + 1)::FLOAT /
-                                         (COALESCE(good_rating_count, 0) + COALESCE(bad_rating_count, 0) + 2)
-                """))
-                conn.commit()
-            except Exception as ex:
-                print(f"Migration error: {ex}")
-            try:
-                conn.execute(text("ALTER TABLE ratings ALTER COLUMN rating DROP NOT NULL"))
-                conn.commit()
-            except Exception as ex:
-                print(f"Migration error: {ex}")
-                
-        print("Database connected and tables created successfully.")
-        break
+        break  # conexión OK, salir del loop
     except OperationalError as e:
         if i == max_retries - 1:
             print("Failed to connect to the database after several retries.")
             raise e
         print(f"Database connection failed. Retrying in 3 seconds... ({i+1}/{max_retries})")
         time.sleep(3)
+
+# Migraciones — solo una vez, fuera del loop
+with database.engine.connect() as conn:
+    try:
+        conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS presentation_score INTEGER DEFAULT 0"))
+        conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS good_rating_count INTEGER DEFAULT 0"))
+        conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS bad_rating_count INTEGER DEFAULT 0"))
+        conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS trending_score FLOAT DEFAULT 0"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS idx_movies_trending_score ON movies (trending_score DESC)"))
+        conn.execute(text("""
+            UPDATE movies
+            SET trending_score = (COALESCE(good_rating_count, 0) + 1.0) /
+                                 (COALESCE(good_rating_count, 0) + COALESCE(bad_rating_count, 0) + 2)
+            WHERE trending_score IS NULL OR trending_score = 0
+        """))
+        conn.commit()
+    except Exception as ex:
+        print(f"Migration warning: {ex}")
+    try:
+        conn.execute(text("ALTER TABLE ratings ALTER COLUMN rating DROP NOT NULL"))
+        conn.commit()
+    except Exception as ex:
+        print(f"Migration warning: {ex}")
+
+print("Database connected and tables created successfully.")
 
 app = FastAPI(title="Movie Recommendation API")
 
