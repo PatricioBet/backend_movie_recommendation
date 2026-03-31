@@ -19,6 +19,8 @@ import time
 from sqlalchemy.exc import OperationalError
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def calculate_trending_score(good_count: int, bad_count: int) -> float:
     # Laplace smoothing to reduce volatility with very low vote counts.
     return (good_count + 1) / (good_count + bad_count + 2)
@@ -95,15 +97,23 @@ try:
         encoders = pickle.load(f)
         user2idx = encoders['user2idx']
         movie2idx = encoders['movie2idx']
-        
+
     num_users = len(user2idx)
     num_items = len(movie2idx)
-    ncf_net = NCF(num_users=num_users, num_items=num_items, embedding_dim=64, dropout=0.33)
-    # Map model to CPU since backend server may not have GPU available
-    ncf_net.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
+
+    ncf_net = NCF(
+        num_users=num_users,
+        num_items=num_items,
+        embedding_dim=64,
+        dropout=0.33
+        )
+
+    # 🔥 cargar en GPU si existe
+    ncf_net.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    ncf_net.to(device)
     ncf_net.eval()
-    ml_ready = True
-    print(f"ML Model loaded successfully. Users: {num_users}, Items: {num_items}")
+
+    print(f"Using device: {device}")
 except Exception as e:
     print("ML Model not loaded. Backend will run in simulation mode. Error:", e)
 
@@ -236,23 +246,24 @@ def get_recommendations(user_id: int, db: Session = Depends(get_db)):
             return all_movies[:5]
             
         with torch.no_grad():
-            u_tensors = torch.tensor([idx_user]*len(m_ids), dtype=torch.long)
-            i_tensors = torch.tensor([movie2idx[m] for m in m_ids], dtype=torch.long)
+            u_tensors = torch.tensor([idx_user]*len(m_ids), dtype=torch.long).to(device)
+            i_tensors = torch.tensor([movie2idx[m] for m in m_ids], dtype=torch.long).to(device)
+
             preds = ncf_net(u_tensors, i_tensors)
-            
-            # Incorporar la popularidad al modelo de predicción
-            # Predicción base + peso por cantidad de calificaciones positivas comprobadas
+            preds = preds.cpu()  # 👈 importante
+
             adjusted_preds = []
             for idx, m_id in enumerate(m_ids):
-                movie_obj = next((m for m in all_movies if m.id == m_id), None)
+                movie_dict = {m.id: m for m in all_movies}
+                movie_obj = movie_dict.get(m_id)
                 pred_score = preds[idx].item()
-                
+
                 if movie_obj:
                     good = movie_obj.good_rating_count or 0
                     bad = movie_obj.bad_rating_count or 0
                     popularity_bonus = calculate_trending_score(good, bad)
                     pred_score = pred_score * 0.7 + popularity_bonus * 0.3 * pred_score
-                    
+
                 adjusted_preds.append((m_id, pred_score))
                 
             adjusted_preds.sort(key=lambda x: x[1], reverse=True)
