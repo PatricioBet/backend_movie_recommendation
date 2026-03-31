@@ -25,3 +25,6 @@ postgres_data/
 .ml-latest-small/
 
 ml-latest.zip
+
+models/ncf_model.pth
+models/encoders.pkl
