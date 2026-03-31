@@ -104,7 +104,7 @@ try:
     ncf_net = NCF(
         num_users=num_users,
         num_items=num_items,
-        embedding_dim=64,
+        embedding_dim=32,
         dropout=0.33
         )
 
@@ -115,6 +115,7 @@ try:
 
     print(f"Using device: {device}")
 except Exception as e:
+    ncf_net = None
     print("ML Model not loaded. Backend will run in simulation mode. Error:", e)
 
 
